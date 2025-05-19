@@ -1,0 +1,56 @@
+opentelemetry-collector:
+  config:
+    receivers:
+      otlp:
+        protocols:
+          grpc:    # gRPC receiver for ad service (default port 4317)
+            endpoint: 0.0.0.0:4317
+          http:    # HTTP receiver for other services or browser RUM
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 1800
+        spike_limit_mib: 256
+
+      batch:
+        send_batch_size: 512
+        timeout: 200ms
+
+    exporters:
+      otlphttp/elastic:
+        endpoint: "${OTEL_ELASTIC_ENDPOINT}"
+        traces_endpoint:  "${OTEL_ELASTIC_ENDPOINT}/v1/traces"
+        metrics_endpoint: "${OTEL_ELASTIC_ENDPOINT}/v1/metrics"
+        logs_endpoint:    "${OTEL_ELASTIC_ENDPOINT}/v1/logs"
+        headers:
+          Authorization: "ApiKey ${OTEL_ELASTIC_API_KEY}"
+        compression: gzip
+        retry_on_failure:
+          enabled: true
+          initial_interval: 5s
+          max_interval: 30s
+          max_elapsed_time: 300s
+        sending_queue:
+          enabled: true
+          num_consumers: 2
+          queue_size: 10000
+
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces:
+          receivers:  [otlp]
+          processors: [memory_limiter, batch]
+          exporters:  [otlphttp/elastic]
+
+        metrics:
+          receivers:  [otlp]
+          processors: [memory_limiter, batch]
+          exporters:  [otlphttp/elastic]
+
+        logs:
+          receivers:  [otlp]
+          processors: [memory_limiter, batch]
+          exporters:  [otlphttp/elastic]

@@ -1,0 +1,54 @@
+slug: otel-demo-track
+id: ktgdkyxniuqp
+title: OpenTelemetry Demo on K8s
+teaser: A short description of the track.
+description: Deploy and explore the OpenTelemetry demo on Kubernetes using k3s and Helm.
+icon: https://storage.googleapis.com/instruqt-frontend/img/tracks/default.png
+tags: []
+owner: elastic
+developers:
+  - peter.simkins@elastic.co
+idle_timeout: 300
+timelimit: 1200
+lab_config:
+  sidebar_enabled: true
+  feedback_recap_enabled: true
+  feedback_tab_enabled: false
+  loadingMessages: true
+  hideStopButton: false
+enhanced_loading: false
+
+machines:
+  node1:
+    image: ubuntu
+    shell: bash
+    memory: 2048
+    cpu: 2
+
+tabs:
+  - name: Terminal
+    type: terminal
+    host: node1
+    path: /root
+
+challenges:
+  - slug: 01-01-challenge
+    title: Deploy with Elastic Observability
+    type: challenge
+    index: 1
+    difficulty: basic
+    start: ./01-01-challenge/start.sh
+    notes:
+      - type: text
+        title: Tip
+        contents: After deployment, check your Elastic dashboard for incoming telemetry.
+    verify: ./01-01-challenge/verify.sh
+    parameters:
+      - name: OTEL_ELASTIC_ENDPOINT
+        type: text
+        label: Elastic OTLP Endpoint
+        default: https://your-deployment.elastic.cloud:443
+      - name: OTEL_ELASTIC_API_KEY
+        type: password
+        label: Elastic API Key
+        default: your-api-key-here
