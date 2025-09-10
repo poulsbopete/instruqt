@@ -1,0 +1,6 @@
+version: "3"
+virtualmachines:
+- name: kubernetes
+  image: instruqt/k3s-v1-29-0
+  memory: 16384
+  cpus: 4

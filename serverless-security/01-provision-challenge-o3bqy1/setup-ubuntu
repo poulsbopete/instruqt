@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# setup-atomic.sh – Minimal bootstrap for Atomic Red Team on Instruqt VMs
+# Author: ChatGPT | 2025‑07‑21
+
+set -Eeuo pipefail
+trap 'echo -e "\e[31m[FAIL]\e[0m $BASH_SOURCE:$LINENO – $BASH_COMMAND"' ERR
+
+# ───────────── CONFIG ─────────────
+GITHUB_DEST="/opt/atomic-red-team"   # where to clone the repo
+# ──────────────────────────────────
+
+info()  { echo -e "\e[34m[INFO]\e[0m $*"; }
+good()  { echo -e "\e[32m[DONE]\e[0m $*"; }
+die()   { echo -e "\e[31m[ERR ]\e[0m $*" >&2; exit 1; }
+
+[[ $EUID -eq 0 ]] || die "Run with sudo or as root."
+
+# 1) Tiny apt baseline (git + awk)
+info "Installing git (for clone) and awk (for YAML parsing)…"
+export DEBIAN_FRONTEND=noninteractive
+apt-get -qq update
+apt-get -yqq install git gawk
+
+# 2) Grab Atomic Red Team (shallow clone)
+if [[ ! -d $GITHUB_DEST ]]; then
+  info "Cloning Atomic Red Team repo…"
+  git clone --depth 1 https://github.com/redcanaryco/atomic-red-team "$GITHUB_DEST"
+else
+  good "Atomic repo already present."
+fi
+
+# 3) Drop a ultra‑light wrapper: /usr/local/bin/atomic
+cat >/usr/local/bin/atomic <<'EOS'
+#!/usr/bin/env bash
+# atomic – Run an Atomic Red Team technique in one line
+set -euo pipefail
+[[ $# -lt 1 ]] && { echo "Usage: atomic <ATT&CK-ID> [--show]"; exit 1; }
+
+TECH="$1"
+YAML="/opt/atomic-red-team/atomics/${TECH}/${TECH}.yaml"
+[[ -f $YAML ]] || { echo "Technique $TECH not found."; exit 1; }
+
+CMD=$(awk '/^[[:space:]]*executor:/,/^[[:space:]]*[a-zA-Z_]+:/' "$YAML" \
+      | awk '/command:/ {sub(/command:[[:space:]]*/, ""); print; exit}')
+
+if [[ ${2:-} == "--show" ]]; then
+  echo "$CMD"
+  exit 0
+fi
+
+echo "[*] Running: $CMD"
+eval "$CMD"
+EOS
+chmod +x /usr/local/bin/atomic
+
+# 4) Convenience alias for interactive shells
+echo 'alias invoke-atomic="atomic"' > /etc/profile.d/atomic.sh
+chmod +x /etc/profile.d/atomic.sh
+
+good "Setup complete!  🔥  Example:  atomic T1055  (process injection)"

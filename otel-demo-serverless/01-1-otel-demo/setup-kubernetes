@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+log() { printf "[setup] %s\n" "$*"; }
+
+log "Preparing Kubernetes for OTel Demo (Serverless export)…"
+
+# ── Ensure minimal deps (jq for helpers) ───────────────────────────────────────
+if ! command -v jq >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -qq update
+    apt-get -yqq install --no-install-recommends jq
+  else
+    log "WARN: jq not found and apt-get unavailable; flag helpers may not work."
+  fi
+fi
+
+# ── Helm repo for opentelemetry-demo (idempotent) ─────────────────────────────
+if ! helm repo list 2>/dev/null | awk '{print $1}' | grep -qx open-telemetry; then
+  helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts --force-update
+fi
+# Skip update if you set SKIP_HELM_UPDATE=1
+if [[ "${SKIP_HELM_UPDATE:-0}" != "1" ]]; then
+  helm repo update >/dev/null
+fi
+
+# ── Serverless values (create once) ───────────────────────────────────────────
+VALUES="$HOME/elastic-demo.yaml"
+if [[ ! -s "$VALUES" ]]; then
+  cat > "$VALUES" <<'EOF'
+opentelemetry-collector:
+  config:
+    receivers:
+      otlp:
+        protocols:
+          grpc: {}
+          http: {}
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 450
+        spike_limit_mib: 128
+      batch:
+        send_batch_size: 512
+        timeout: 200ms
+    exporters:
+      otlphttp/elastic:
+        endpoint: "PASTE_ELASTIC_OTLP_ENDPOINT_HERE"
+        headers:
+          Authorization: "ApiKey PASTE_ELASTIC_API_KEY_HERE"
+        compression: gzip
+        retry_on_failure:
+          enabled: true
+        sending_queue:
+          enabled: true
+          num_consumers: 2
+          queue_size: 10000
+    service:
+      pipelines:
+        traces:  { receivers: [otlp], processors: [memory_limiter,batch], exporters: [otlphttp/elastic] }
+        metrics: { receivers: [otlp], processors: [memory_limiter,batch], exporters: [otlphttp/elastic] }
+        logs:    { receivers: [otlp], processors: [memory_limiter,batch], exporters: [otlphttp/elastic] }
+EOF
+  log "Created $VALUES (with placeholders)."
+else
+  log "Values file already present at $VALUES."
+fi
+
+# ── Tiny helpers for feature flags (become useful after Helm install) ─────────
+
+cat >/usr/local/bin/list_flags <<'H'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+ns="${1:-otel-demo}"
+command -v jq >/dev/null 2>&1 || { echo "jq required"; exit 1; }
+cm="$(kubectl -n "$ns" get deploy otel-demo-flagd -o jsonpath='{.spec.template.spec.volumes[?(@.configMap)].configMap.name}' 2>/dev/null || true)"
+[[ -n "$cm" ]] || { echo "flagd ConfigMap not found (install the OTel demo first)"; exit 1; }
+key="$(kubectl -n "$ns" get cm "$cm" -o jsonpath='{.data}' | jq -r 'keys[]|select(test("flag|json|yaml"; "i"))' | head -n1)"
+[[ -n "$key" ]] || { echo "No flag config key found in CM $cm"; exit 1; }
+kubectl -n "$ns" get cm "$cm" -o jsonpath="{.data.${key}}" | jq -r '.flags | keys[]'
+H
+chmod +x /usr/local/bin/list_flags
+
+cat >/usr/local/bin/toggle_flag <<'H'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+ns="${1:-otel-demo}"; flag="${2:-}"; state="${3:-ENABLED}"
+[[ -n "$flag" ]] || { echo "Usage: toggle_flag [ns] <flag> <ENABLED|DISABLED>"; exit 1; }
+[[ "$state" =~ ^(ENABLED|DISABLED)$ ]] || { echo "State must be ENABLED or DISABLED"; exit 1; }
+command -v jq >/dev/null 2>&1 || { echo "jq required"; exit 1; }
+cm="$(kubectl -n "$ns" get deploy otel-demo-flagd -o jsonpath='{.spec.template.spec.volumes[?(@.configMap)].configMap.name}')"
+key="$(kubectl -n "$ns" get cm "$cm" -o jsonpath='{.data}' | jq -r 'keys[]|select(test("flag|json|yaml"; "i"))' | head -n1)"
+tmp="$(mktemp)"; kubectl -n "$ns" get cm "$cm" -o jsonpath="{.data.${key}}" >"$tmp"
+jq --arg f "$flag" --arg s "$state" '.flags[$f].state = $s' "$tmp" >"${tmp}.new"
+kubectl -n "$ns" get cm "$cm" -o json | jq --arg k "$key" --rawfile n "${tmp}.new" '.data[$k]=$n' | kubectl apply -f - >/dev/null
+kubectl -n "$ns" rollout restart deploy/otel-demo-flagd >/dev/null 2>&1 || true
+echo "Set '$flag' → $state"
+H
+chmod +x /usr/local/bin/toggle_flag
+
+cat >/usr/local/bin/toggle_all_flags <<'H'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+ns="${1:-otel-demo}"; state="${2:-ENABLED}"
+if [[ "$1" == "ENABLED" || "$1" == "DISABLED" ]]; then ns="otel-demo"; state="$1"; fi
+[[ "$state" =~ ^(ENABLED|DISABLED)$ ]] || { echo "State must be ENABLED or DISABLED"; exit 1; }
+command -v jq >/dev/null 2>&1 || { echo "jq required"; exit 1; }
+cm="$(kubectl -n "$ns" get deploy otel-demo-flagd -o jsonpath='{.spec.template.spec.volumes[?(@.configMap)].configMap.name}')"
+key="$(kubectl -n "$ns" get cm "$cm" -o jsonpath='{.data}' | jq -r 'keys[]|select(test("flag|json|yaml"; "i"))' | head -n1)"
+kubectl -n "$ns" get cm "$cm" -o json | jq --arg k "$key" --arg s "$state" '.data[$k] |= (fromjson | (.flags |= with_entries(.value.state=$s)) | tojson)' | kubectl apply -f - >/dev/null
+kubectl -n "$ns" rollout restart deploy/otel-demo-flagd >/dev/null 2>&1 || true
+echo "All flags → $state"
+H
+chmod +x /usr/local/bin/toggle_all_flags
+
+log "Done. Next: open $VALUES, paste your OTLP endpoint + API key, then run the Helm install from the assignment."

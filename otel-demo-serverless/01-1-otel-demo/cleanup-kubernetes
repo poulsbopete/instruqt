@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Cleanup — remove the OTel demo from the cluster
+set -Eeuo pipefail
+
+NS="${NS:-otel-demo}"
+REL="${REL:-otel-demo}"
+
+echo "🧹 Cleanup: uninstalling Helm release ${REL} (ns ${NS})…"
+helm -n "${NS}" uninstall "${REL}" >/dev/null 2>&1 || true
+
+echo "🧹 Cleanup: deleting namespace ${NS} (non-blocking)…"
+kubectl delete ns "${NS}" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+
+# Optional: remove only if you want a pristine VM each run
+# rm -f /usr/local/bin/list_flags /usr/local/bin/toggle_flag /usr/local/bin/toggle_all_flags || true
+
+echo "✅ Cleanup done."

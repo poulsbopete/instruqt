@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# check — Instruqt validation for Elastic + OTel demo (Serverless path)
+set -Eeuo pipefail
+
+fail() { echo "❌ $*"; exit 1; }
+warn() { echo "⚠️  $*"; }
+pass() { echo "✅ $*"; }
+
+NS="${NS:-otel-demo}"
+REL="${REL:-otel-demo}"
+VALUES="${VALUES:-$HOME/elastic-demo.yaml}"
+
+# ── Basic tooling ──────────────────────────────────────────────────────────────
+command -v kubectl >/dev/null 2>&1 || fail "kubectl not found"
+command -v helm    >/dev/null 2>&1 || fail "helm not found"
+
+# ── 1) Values file present + placeholders removed ─────────────────────────────
+[[ -s "$VALUES" ]] || fail "Missing values file: $VALUES"
+
+if grep -q 'PASTE_ELASTIC' "$VALUES"; then
+  fail "Values file still contains placeholders. Edit $VALUES with your OTLP endpoint + Api Key."
+fi
+
+ENDPOINT="$(awk -F'"' '/^[[:space:]]*endpoint:[[:space:]]*"/{print $2; exit}' "$VALUES" || true)"
+[[ -n "${ENDPOINT}" ]] || fail "Could not read 'endpoint' from $VALUES"
+[[ "$ENDPOINT" =~ ^https?:// ]] || fail "Endpoint in $VALUES does not look like http(s)://… (got: $ENDPOINT)"
+
+if ! grep -qE 'Authorization:[[:space:]]*"ApiKey[[:space:]]+[^"]+' "$VALUES"; then
+  fail "Authorization header in $VALUES is missing or not an ApiKey value."
+fi
+pass "Values file OK ($VALUES)"
+
+# ── 2) Helm release exists in the expected namespace ──────────────────────────
+if ! helm -n "$NS" status "$REL" >/dev/null 2>&1; then
+  fail "Helm release '$REL' not found in namespace '$NS'. Deploy as shown in the assignment."
+fi
+pass "Helm release present ($REL in $NS)"
+
+# ── 3) Collector deployment ready (wait briefly, then decide) ─────────────────
+DEPLOY="otel-demo-otelcol"
+
+# Wait up to 120s for readiness (quick exit if already ready)
+ready_now() {
+  kubectl -n "$NS" get deploy "$DEPLOY" -o jsonpath='{.status.readyReplicas}' 2>/dev/null | grep -Eq '^[1-9][0-9]*$'
+}
+
+if ! kubectl -n "$NS" get deploy "$DEPLOY" >/dev/null 2>&1; then
+  fail "Deployment '$DEPLOY' not found in namespace '$NS'."
+fi
+
+for _ in $(seq 1 24); do
+  if ready_now; then break; fi
+  sleep 5
+done
+ready_now || fail "Deployment '$DEPLOY' is not Ready yet."
+
+pass "Collector deployment is Ready ($DEPLOY)"
+
+# ── 4) Check the applied collector config (ConfigMap) ─────────────────────────
+# Chart names the CM the same as the deploy in this demo
+if ! kubectl -n "$NS" get cm "$DEPLOY" >/dev/null 2>&1; then
+  fail "ConfigMap '$DEPLOY' not found in namespace '$NS'."
+fi
+
+CM_DATA="$(kubectl -n "$NS" get cm "$DEPLOY" -o jsonpath='{.data}' 2>/dev/null || true)"
+[[ -n "$CM_DATA" ]] || fail "Could not fetch data from ConfigMap '$DEPLOY'."
+
+# Pull the rendered otel config text from CM data (first key wins)
+CM_KEY="$(kubectl -n "$NS" get cm "$DEPLOY" -o jsonpath='{.data}' \
+        | sed -E 's/.*"([^"]+)":.*/\1/' | head -n1)"
+OTELCFG="$(kubectl -n "$NS" get cm "$DEPLOY" -o jsonpath="{.data.${CM_KEY}}" 2>/dev/null || true)"
+
+[[ -n "$OTELCFG" ]] || fail "Collector config is empty in '$DEPLOY/$CM_KEY'."
+
+echo "$OTELCFG" | grep -qE 'otlphttp/elastic' || fail "Exporter 'otlphttp/elastic' not present in collector config."
+echo "$OTELCFG" | grep -qE 'endpoint:[[:space:]]*".*"' || fail "No endpoint found in collector config."
+echo "$OTELCFG" | grep -qE 'Authorization:[[:space:]]*"(ApiKey|Bearer)[[:space:]]+[^"]+"' \
+  || fail "No Authorization header found in collector config."
+
+pass "Collector config references endpoint + Authorization header"
+
+# ── 5) Optional: feature flag config present (best-effort) ────────────────────
+if kubectl -n "$NS" get deploy otel-demo-flagd >/dev/null 2>&1; then
+  if command -v list_flags >/dev/null 2>&1; then
+    if ! list_flags "$NS" >/dev/null 2>&1; then
+      warn "Feature-flag helper couldn't list flags yet (deployment may still be converging)."
+    else
+      pass "Feature flags accessible via 'list_flags $NS'"
+    fi
+  else
+    warn "'list_flags' helper is not installed in this VM (not required to pass)."
+  fi
+else
+  warn "flagd deploy not found yet; this is okay if the demo is still starting."
+fi
+
+# ── All checks passed ─────────────────────────────────────────────────────────
+echo
+echo "🎉 All checks passed. Your OTel demo is deployed and wired to Elastic."
+exit 0

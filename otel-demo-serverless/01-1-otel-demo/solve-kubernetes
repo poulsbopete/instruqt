@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Solve — deploy the OTel demo wired to Elastic Serverless
+set -Eeuo pipefail
+
+NS="${NS:-otel-demo}"
+REL="${REL:-otel-demo}"
+VALUES="${VALUES:-$HOME/elastic-demo.yaml}"
+CHART_VER="${CHART_VER:-0.31.0}"
+
+echo "➡️  Solve: validating values file…"
+[[ -s "$VALUES" ]] || { echo "Missing $VALUES"; exit 1; }
+! grep -q 'PASTE_ELASTIC' "$VALUES" || { echo "Fill placeholders in $VALUES first."; exit 1; }
+
+echo "➡️  Solve: ensuring Helm & repo…"
+command -v helm >/dev/null 2>&1 || curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts --force-update >/dev/null
+helm repo update >/dev/null
+
+echo "➡️  Solve: installing/upgrading release ${REL} in ns ${NS}…"
+helm upgrade --install "${REL}" open-telemetry/opentelemetry-demo \
+  --version "${CHART_VER}" \
+  -n "${NS}" --create-namespace \
+  -f "${VALUES}" >/dev/null
+
+echo "➡️  Solve: waiting for otelcol to be Ready…"
+kubectl -n "${NS}" rollout status deploy/otel-demo-otelcol --timeout=600s
+
+echo "✅ Solve complete."

@@ -1,0 +1,26 @@
+slug: otel-demo-serverless
+id: eove6xu8ydv2
+title: otel-demo-serverless
+description: ""
+icon: ""
+tags:
+- co.elastic.workshops.production.open-telemetry-demo-with-elastic-serverless
+- co.elastic.workshops.production
+- co.elastic.workshops
+owner: elastic
+developers:
+- peter.simkins@elastic.co
+- david.hope@elastic.co
+instructors:
+- stuart.moorhouse@elastic.co
+idle_timeout: 3600
+timelimit: 10800
+lab_config:
+  extend_ttl: 3600
+  sidebar_enabled: true
+  feedback_recap_enabled: true
+  feedback_tab_enabled: false
+  loadingMessages: true
+  hideStopButton: false
+checksum: "15571842804963111213"
+enhanced_loading: false
